@@ -1,51 +1,7 @@
+# Author: Gurumoorthy Mohan
 version: '3.7'
-networks:
-  forms-flow-network:
-    driver: 'bridge'
-services:
-  keycloak:
-    image: quay.io/keycloak/keycloak:14.0.0
-    restart: unless-stopped
-    container_name: keycloak
-    volumes:
-      - ../../forms-flow-idm/keycloak/imports:/opt/jboss/keycloak/imports
-      - ../../forms-flow-idm/keycloak/themes/formsflow:/opt/jboss/keycloak/themes/formsflow      
-    command: 
-      - "-b 0.0.0.0 -Dkeycloak.import=/opt/jboss/keycloak/imports/formsflow-ai-realm.json -Dkeycloak.migration.strategy=OVERWRITE_EXISTING"
-    environment:
-      - DB_VENDOR=POSTGRES
-      - DB_ADDR=forms-flow-postgresdb
-      - DB_DATABASE=${KEYCLOAK_JDBC_DB:-keycloak}
-      - DB_USER=${KEYCLOAK_JDBC_USER-admin}
-      - DB_PASSWORD=${KEYCLOAK_JDBC_PASSWORD:-changeme}
-#      - KEYCLOAK_USER=${KEYCLOAK_ADMIN_USER:-admin}
-#      - KEYCLOAK_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-changeme}
-    ports:
-      - 8080:8080
-    depends_on:
-      - forms-flow-postgresdb
-    healthcheck:
-      test: ["CMD-SHELL", "curl http://localhost:8080/auth/realms/forms-flow-ai"]
-      interval: 30s
-      timeout: 10s
-      retries: 10 
-    networks:
-      - forms-flow-network
 
-  forms-flow-postgresdb:
-    container_name: forms-flow-postgresdb
-    image: postgres:latest
-    environment:
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-      - POSTGRES_MULTIPLE_DATABASES=formsflowbpm, webapi,keycloak
-    ports:
-      - 5432
-    volumes:
-      - ./pg-init-scripts:/docker-entrypoint-initdb.d
-      - ./postgres/forms-flow-postgresdb:/var/lib/postgresql/data
-    networks:
-      - forms-flow-network
+services:
   forms-flow-forms-db:
     container_name: forms-flow-forms-db
     image: mongo:5.0
@@ -64,6 +20,7 @@ services:
       - ./mongodb/mongod.conf:/etc/mongod.conf
     networks:
       - forms-flow-network
+
   forms-flow-forms:
     container_name: forms-flow-forms
     image: formsflow/forms-flow-forms:v5.2.0-alpha
@@ -72,7 +29,6 @@ services:
     restart: always
     depends_on :
       - forms-flow-forms-db
-      - keycloak
     ports:
       - '3001:3001'
     # The application wants to download things to the local directory
@@ -90,6 +46,22 @@ services:
     tty: true # -t
     networks:
       - forms-flow-network
+
+  forms-flow-bpm-db:
+    image: postgres:latest
+    container_name: forms-flow-bpm-db
+    environment:
+      POSTGRES_USER: ${CAMUNDA_JDBC_USER:-admin}
+      POSTGRES_PASSWORD: ${CAMUNDA_JDBC_PASSWORD:-changeme}
+      POSTGRES_DB: ${CAMUNDA_JDBC_DB_NAME:-formsflow-bpm}
+    volumes:
+      - ./postgres/camunda:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+    restart: always
+    networks:
+      - forms-flow-network
+
   forms-flow-bpm:
     container_name: forms-flow-bpm
     build:
@@ -97,8 +69,7 @@ services:
       dockerfile: Dockerfile
     restart: always
     depends_on :
-      - forms-flow-postgresdb
-      - keycloak
+      - forms-flow-bpm-db
     ports:
       - '8000:8080'
     environment:
@@ -106,7 +77,7 @@ services:
       - KEYCLOAK_URL_REALM=${KEYCLOAK_URL_REALM:-forms-flow-ai}
       - KEYCLOAK_CLIENTID=${KEYCLOAK_BPM_CLIENT_ID:-forms-flow-bpm}
       - KEYCLOAK_CLIENTSECRET=${KEYCLOAK_BPM_CLIENT_SECRET:-e4bdbd25-1467-4f7f-b993-bc4b1944c943}
-      - CAMUNDA_JDBC_URL=${CAMUNDA_JDBC_URL:-jdbc:postgresql://forms-flow-postgresdb:5432/formsflowbpm}
+      - CAMUNDA_JDBC_URL=${CAMUNDA_JDBC_URL:-jdbc:postgresql://forms-flow-bpm-db:5432/formsflow-bpm}
       - CAMUNDA_JDBC_USER=${CAMUNDA_JDBC_USER:-admin}
       - CAMUNDA_JDBC_PASSWORD=${CAMUNDA_JDBC_PASSWORD:-changeme}
       - CAMUNDA_JDBC_DRIVER=${CAMUNDA_JDBC_DRIVER:-org.postgresql.Driver}
@@ -150,6 +121,7 @@ services:
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
     networks:
       - forms-flow-network
+ 
   forms-flow-web:
     container_name: forms-flow-web
     restart: always
@@ -189,6 +161,22 @@ services:
 
     networks:
       - forms-flow-network
+
+  forms-flow-webapi-db:
+    container_name: forms-flow-webapi-db
+    image: postgres:11
+    environment:
+      POSTGRES_USER: ${FORMSFLOW_API_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${FORMSFLOW_API_DB_PASSWORD:-changeme}
+      POSTGRES_DB: ${FORMSFLOW_API_DB_NAME:-webapi}
+    ports:
+      - '6432:5432'
+    restart: always
+    volumes:
+      - ./postgres/webapi:/var/lib/postgresql/data
+    networks:
+      - forms-flow-network
+
   forms-flow-webapi:
     container_name: forms-flow-webapi
     build:
@@ -196,9 +184,9 @@ services:
       dockerfile: Dockerfile
     restart: always
     depends_on :
-      - forms-flow-postgresdb
+      - forms-flow-webapi-db
       - forms-flow-forms
-    entrypoint: "/wait-for-service.sh forms-flow-postgresdb:5432 -s -- /wait-for-service.sh keycloak:8080 -s -- /wait-for-service.sh forms-flow-forms:3001 -s -- ./entrypoint.sh"
+    entrypoint: "/wait-for-service.sh forms-flow-webapi-db:5432 -s -- ./entrypoint.sh"
     ports:
       - '5000:5000'
     volumes:
@@ -206,7 +194,7 @@ services:
     environment:
       INSIGHT_API_KEY: ${INSIGHT_API_KEY}
       INSIGHT_API_URL: ${INSIGHT_API_URL}
-      DATABASE_URL: ${FORMSFLOW_API_DB_URL:-postgresql://admin:changeme@forms-flow-postgresdb:5432/webapi}
+      DATABASE_URL: ${FORMSFLOW_API_DB_URL:-postgresql://postgres:changeme@forms-flow-webapi-db:5432/webapi}
       BPM_TOKEN_API: ${KEYCLOAK_URL}/auth/realms/${KEYCLOAK_URL_REALM:-forms-flow-ai}/protocol/openid-connect/token
       BPM_CLIENT_ID: ${KEYCLOAK_BPM_CLIENT_ID:-forms-flow-bpm}
       BPM_CLIENT_SECRET: ${KEYCLOAK_BPM_CLIENT_SECRET:-e4bdbd25-1467-4f7f-b993-bc4b1944c943}
@@ -234,6 +222,7 @@ services:
     tty: true # -t
     networks:
       - forms-flow-network
+
   forms-flow-documents-api:
     container_name: forms-flow-documents-api
     build:
@@ -270,6 +259,11 @@ services:
     tty: true # -t
     networks:
       - forms-flow-network
+
+networks:
+  forms-flow-network:
+    driver: 'bridge'
+
 volumes:
   mdb-data:
   postgres:
