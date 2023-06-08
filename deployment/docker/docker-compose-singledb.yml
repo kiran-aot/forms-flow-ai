@@ -3,13 +3,42 @@ networks:
   forms-flow-network:
     driver: 'bridge'
 services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:14.0.0
+    restart: unless-stopped
+    container_name: keycloak
+    volumes:
+      - ../../forms-flow-idm/keycloak/imports:/opt/jboss/keycloak/imports
+      - ../../forms-flow-idm/keycloak/themes/formsflow:/opt/jboss/keycloak/themes/formsflow      
+    command: 
+      - "-b 0.0.0.0 -Dkeycloak.import=/opt/jboss/keycloak/imports/formsflow-ai-realm.json -Dkeycloak.migration.strategy=OVERWRITE_EXISTING"
+    environment:
+      - DB_VENDOR=POSTGRES
+      - DB_ADDR=forms-flow-postgresdb
+      - DB_DATABASE=${KEYCLOAK_JDBC_DB:-keycloak}
+      - DB_USER=${KEYCLOAK_JDBC_USER-admin}
+      - DB_PASSWORD=${KEYCLOAK_JDBC_PASSWORD:-changeme}
+#      - KEYCLOAK_USER=${KEYCLOAK_ADMIN_USER:-admin}
+#      - KEYCLOAK_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-changeme}
+    ports:
+      - 8080:8080
+    depends_on:
+      - forms-flow-postgresdb
+    healthcheck:
+      test: ["CMD-SHELL", "curl http://localhost:8080/auth/realms/forms-flow-ai"]
+      interval: 30s
+      timeout: 10s
+      retries: 10 
+    networks:
+      - forms-flow-network
+
   forms-flow-postgresdb:
     container_name: forms-flow-postgresdb
     image: postgres:latest
     environment:
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
-      - POSTGRES_MULTIPLE_DATABASES=formsflowbpm, webapi
+      - POSTGRES_MULTIPLE_DATABASES=formsflowbpm, webapi,keycloak
     ports:
       - 5432
     volumes:
@@ -43,6 +72,7 @@ services:
     restart: always
     depends_on :
       - forms-flow-forms-db
+      - keycloak
     ports:
       - '3001:3001'
     # The application wants to download things to the local directory
@@ -68,6 +98,7 @@ services:
     restart: always
     depends_on :
       - forms-flow-postgresdb
+      - keycloak
     ports:
       - '8000:8080'
     environment:
@@ -167,7 +198,7 @@ services:
     depends_on :
       - forms-flow-postgresdb
       - forms-flow-forms
-    entrypoint: "/wait-for-service.sh forms-flow-postgresdb:5432 -s -- ./entrypoint.sh"
+    entrypoint: "/wait-for-service.sh forms-flow-postgresdb:5432 -s -- /wait-for-service.sh keycloak:8080 -s -- /wait-for-service.sh forms-flow-forms:3001 -s -- ./entrypoint.sh"
     ports:
       - '5000:5000'
     volumes:
